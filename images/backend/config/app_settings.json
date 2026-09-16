@@ -1,0 +1,8 @@
+{
+  "VLM_ENGINE": "ollama",
+  "OLLAMA_URL": "https://73d4kjrf9en6q2-11434.proxy.runpod.net/",
+  "OLLAMA_MODEL": "feadxus/Huihui-Qwen3-VL-4B-Instruct-abliterated:BF16",
+  "OPENAI_API_KEY": "",
+  "OPENAI_MODEL": "gpt-4o",
+  "UPLOAD_MAX_SIZE": "10MB"
+}
