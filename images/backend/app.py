@@ -1,5 +1,31 @@
 """FastAPI application entry point."""
+import json
 import os
+
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _apply_persisted_settings():
+    """Seed os.environ from backend/config/app_settings.json BEFORE any module
+    constructs a VisionClient (importing routes/api builds one at module level).
+    Actual OS environment variables still win — this only fills in values that
+    aren't already set. Without this, editing app_settings.json (or the
+    Settings page) had no effect on a cold start."""
+    path = os.path.join(APP_ROOT, "backend", "config", "app_settings.json")
+    try:
+        with open(path) as f:
+            settings = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(settings, dict):
+        return
+    for key, value in settings.items():
+        if value not in (None, "") and key not in os.environ:
+            os.environ[key] = str(value)
+
+
+_apply_persisted_settings()
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,10 +36,6 @@ from routes import api
 from database import Database
 
 db = Database()
-
-# Anchor runtime directories to the repo root so they resolve the same way
-# regardless of the CWD the server is started from.
-APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _project_data_dir(*parts: str) -> str:

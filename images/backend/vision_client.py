@@ -31,7 +31,7 @@ class VisionClient:
     def __init__(self):
         self.engine = os.getenv("VLM_ENGINE", "ollama")
         self.api_key = os.getenv("OPENAI_API_KEY", "")
-        self.ollama_url = os.getenv("OLLAMA_URL", "https://gezt90h2jxkuuu-11434.proxy.runpod.net/")
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.ollama_model = os.getenv("OLLAMA_MODEL", "feadxus/Huihui-Qwen3-VL-4B-Instruct-abliterated:BF16")  # Use llava or qwen2-vl
         self.db = Database()
@@ -113,7 +113,23 @@ Return ONLY a valid JSON object. Do not include markdown or extra text.'''
             })
             
             if response.status_code != 200:
-                raise Exception(f"Ollama API error: {response.text}")
+                # The body is often empty on gateway failures (e.g. an expired
+                # RunPod proxy returns 404 with no content), so include the
+                # status code and the upstream headers to keep the message
+                # diagnostic.
+                detail = response.text or "(empty response body)"
+                headers = {k: v for k, v in response.headers.items()
+                           if k.lower().startswith(("x-", "server", "cf-"))}
+                hint = ""
+                if response.status_code == 404:
+                    hint = " — check OLLAMA_URL: 404 usually means the Ollama server isn't reachable at that host/port (e.g. an expired RunPod proxy URL)."
+                elif response.status_code in (401, 403):
+                    hint = " — check OLLAMA_AUTH_TOKEN / auth headers."
+                raise Exception(
+                    f"Ollama API error: HTTP {response.status_code} {detail}"
+                    + (f" [upstream headers: {headers}]" if headers else "")
+                    + hint
+                )
             
             result = response.json()
             content = result.get("message", {}).get("content", "")
@@ -193,7 +209,19 @@ Return your analysis as a JSON object."""
             response = await client.post(url, headers=headers, json=payload)
             
             if response.status_code != 200:
-                raise Exception(f"OpenAI API error: {response.status_code} {response.text}")
+                detail = response.text or "(empty response body)"
+                resp_headers = {k: v for k, v in response.headers.items()
+                               if k.lower().startswith(("x-", "server", "cf-"))}
+                hint = ""
+                if response.status_code in (401, 403):
+                    hint = " — check OPENAI_API_KEY."
+                elif response.status_code == 404:
+                    hint = " — check OPENAI_MODEL: 404 usually means the model name isn't valid for this key."
+                raise Exception(
+                    f"OpenAI API error: HTTP {response.status_code} {detail}"
+                    + (f" [upstream headers: {resp_headers}]" if resp_headers else "")
+                    + hint
+                )
             
             result = response.json()
             content = result["choices"][0]["message"]["content"]
