@@ -6,7 +6,9 @@ from fastapi.staticfiles import StaticFiles
 
 from vision_client import VisionClient
 from routes import api
+from database import Database
 
+db = Database()
 # Initialize application
 # Port 9119 configured
 app = FastAPI(
@@ -65,3 +67,10 @@ async def health_check():
         "engine": vision_client.engine,
         "models": vision_client.get_available_models()
     }
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Automatically initialize the database tables when the server starts."""
+    db.init_database()
+    print("Database initialized successfully on startup.")

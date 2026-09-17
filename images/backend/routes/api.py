@@ -77,10 +77,6 @@ async def list_vision_models():
 
 # ==================== Settings ====================
 
-# Masked placeholder returned by GET /settings for the OpenAI API key. The
-# frontend echoes this value back on save; the save endpoint treats the exact
-# sentinel as "no change" so a UI round-trip never clobbers the real key with
-# the sentinel. An empty string explicitly clears the key.
 OPENAI_KEY_SENTINEL = "***"
 
 
@@ -107,8 +103,7 @@ def _load_settings() -> Dict:
 
 @router.get("/settings")
 async def get_settings():
-    """Read persisted app settings with the OpenAI API key masked so the raw
-    secret is never sent to browsers (devtools, history, service workers…)."""
+    """Read persisted app settings with the OpenAI API key masked."""
     settings = _load_settings()
     if settings.get("OPENAI_API_KEY"):
         settings["OPENAI_API_KEY"] = OPENAI_KEY_SENTINEL
@@ -117,23 +112,18 @@ async def get_settings():
 
 @router.post("/settings")
 async def save_settings(data: dict):
-    """Persist app settings to the config file (0600; key handled via sentinel)."""
-    # Validate settings keys
+    """Persist app settings to the config file."""
     valid_keys = {'VLM_ENGINE', 'OLLAMA_URL', 'OLLAMA_MODEL', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'UPLOAD_MAX_SIZE'}
     invalid_keys = set(data.keys()) - valid_keys
     if invalid_keys:
         raise HTTPException(status_code=400, detail=f"Invalid settings keys: {invalid_keys}")
 
-    # Validate VLM_ENGINE
     if "VLM_ENGINE" in data and data["VLM_ENGINE"] not in ("ollama", "openai"):
         raise HTTPException(status_code=400, detail="VLM_ENGINE must be 'ollama' or 'openai'")
 
-    # The mask echo from the UI means "keep the existing key"; drop it so the
-    # merged result falls back to whatever is already stored.
     if data.get("OPENAI_API_KEY") == OPENAI_KEY_SENTINEL:
         data = {k: v for k, v in data.items() if k != "OPENAI_API_KEY"}
 
-    # Merge with previously saved settings so partial saves don't clobber other keys
     config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
     settings_path = os.path.join(config_dir, "app_settings.json")
     merged = _load_settings()
@@ -144,12 +134,8 @@ async def save_settings(data: dict):
 
         with open(settings_path, "w") as f:
             json.dump(merged, f, indent=2)
-        # Settings can hold secrets; keep the file owner-only.
         os.chmod(settings_path, 0o600)
 
-        # Apply new config to environment and rebuild the shared VisionClient
-        # (it reads all config in __init__, so a fresh instance picks changes up
-        # without a process restart)
         for key, value in merged.items():
             if key == "UPLOAD_MAX_SIZE":
                 continue
@@ -158,7 +144,6 @@ async def save_settings(data: dict):
         global vision_client
         new_client = VisionClient()
         vision_client = new_client
-        # Update the client's own db handle so both share state
         new_client.db = db
 
         return {"status": "ok", "message": "Settings saved"}
@@ -174,12 +159,10 @@ async def upload_image(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "File must be an image")
     
-    # Check file size (max 10MB)
     content = await file.read()
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(400, "File size must be less than 10MB")
     
-    # Save file
     images_dir = Path("data/images/originals")
     images_dir.mkdir(parents=True, exist_ok=True)
     
@@ -190,11 +173,9 @@ async def upload_image(file: UploadFile = File(...)):
     with open(filepath, "wb") as f:
         f.write(content)
     
-    # Add to database
     image_id = db.add_image(str(filepath), file.filename)
     await db.index_image(image_id)
     
-    # Automatically analyze the uploaded image (run in background via async)
     analyzed = False
     analysis_error = None
     try:
@@ -206,8 +187,6 @@ async def upload_image(file: UploadFile = File(...)):
         })
         analyzed = True
     except Exception as e:
-        # The upload itself succeeded; only the auto-analysis failed. Report
-        # that honestly instead of marking an un-analyzable image as analyzed.
         print(f"Auto-analysis failed for {file.filename}: {e}")
         analysis_error = str(e)
     
@@ -224,12 +203,10 @@ async def upload_image(file: UploadFile = File(...)):
 async def upload_images(files: List[UploadFile] = File(...)):
     """Upload multiple images."""
     uploaded = []
-    
     for file in files:
         if file.content_type and file.content_type.startswith("image/"):
             result = await upload_image(file)
             uploaded.append(result)
-    
     return {"uploaded": uploaded, "count": len(uploaded)}
 
 
@@ -253,13 +230,7 @@ async def get_all_images(page: int = 1, limit: int = 50):
 
 @router.get("/images/file/{image_id}")
 async def serve_image(image_id: str):
-    """Serve the original image file for a stored image so the UI can preview it.
-
-    The image's `path` is persisted relative to the project root. We resolve it,
-    confirm the result stays under the image-storage directory (defense in depth
-    against path traversal, even though the path is server-authored), and stream
-    it back with the correct content type for inline rendering in <img>.
-    """
+    """Serve the original image file for a stored image."""
     image = db.get_image(image_id)
     if not image or not image.get("path"):
         raise HTTPException(404, "Image not found")
@@ -276,9 +247,6 @@ async def serve_image(image_id: str):
     if not candidate.is_file():
         raise HTTPException(404, "Image file not found on disk")
 
-    # No `filename=` on FileResponse: that sets Content-Disposition: attachment,
-    # which makes the browser download instead of render. Omitting it leaves the
-    # response inline so it displays directly in the <img> tag.
     return FileResponse(candidate)
 
 
@@ -289,11 +257,9 @@ async def get_image_details(image_id: str):
     if not image:
         raise HTTPException(404, "Image not found")
     
-    # Return analysis if available
     analysis = db.get_image_analysis(image_id)
     image["analysis"] = analysis
     
-    # Find similar images
     similar = db.get_similar_images(image_id)
     image["similar"] = similar
     
@@ -307,17 +273,13 @@ async def delete_image(image_id: str):
     if not image:
         raise HTTPException(404, "Image not found")
     
-    # Move to trash (anchored to repo root, independent of CWD)
-    PROJECT_ROOT = Path(__file__).resolve().parents[2]
     trash_dir = PROJECT_ROOT / "data" / "images" / "trash"
     trash_dir.mkdir(parents=True, exist_ok=True)
 
     if image["path"].endswith((".txt", ".json")):
-        # Skip metadata files
         return {"id": image_id, "deleted": False, "reason": "metadata"}
 
     dest_path = trash_dir / image["filename"]
-    # Handle filename collisions in trash by appending a counter
     candidate = dest_path
     counter = 1
     while candidate.exists():
@@ -343,7 +305,6 @@ async def analyze_image(image_id: str, force: bool = False):
         raise HTTPException(404, "Image not found")
     
     if not force and image.get("has_analysis"):
-        # Return existing analysis
         analysis = db.get_image_analysis(image_id)
         return {
             "image_id": image_id,
@@ -352,40 +313,58 @@ async def analyze_image(image_id: str, force: bool = False):
         }
     
     try:
-        # Run analysis
         result = await vision_client.analyze_image(image["path"])
-        
-        # Save analysis
         db.save_image_analysis(image_id, result.dict())
         db.update_image_metadata(image_id, {
             "has_analysis": True,
             "analysis_updated": datetime.now().isoformat()
         })
-        
-        # Find similar images
         similar = db.get_similar_images(image_id)
-        
         return {
             "image_id": image_id,
             "analysis": result,
-            "similar": similar[:5]  # Limit similar results
+            "similar": similar[:5]
         }
     except Exception as e:
         raise HTTPException(500, f"Analysis failed: {str(e)}")
 
+@router.post("/images/delete/batch")
+async def batch_delete_images(image_ids: List[str] = Body(...)):
+    """Delete multiple images at once."""
+    deleted_count = 0
+    trash_dir = PROJECT_ROOT / "data" / "images" / "trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+
+    for image_id in image_ids:
+        image = db.get_image(image_id)
+        if image and image.get("path"):
+            try:
+                candidate = Path(image["path"])
+                if candidate.is_file():
+                    dest_path = trash_dir / candidate.name
+                    # Handle collisions
+                    counter = 1
+                    while dest_path.exists():
+                        dest_path = trash_dir / f"{candidate.stem}_{counter}{candidate.suffix}"
+                        counter += 1
+                    os.rename(str(candidate), str(dest_path))
+                db.delete_image(image_id)
+                deleted_count += 1
+            except Exception as e:
+                print(f"Failed to delete image {image_id}: {e}")
+
+    return {"status": "success", "deleted_count": deleted_count}
 
 @router.post("/images/analyze/batch")
 async def batch_analyze_images(image_ids: List[str]):
     """Analyze multiple images in batch."""
     results = {}
-    
     for image_id in image_ids:
         try:
             result = await analyze_image(image_id, force=True)
             results[image_id] = result.get("analysis")
         except Exception as e:
             results[image_id] = {"error": str(e)}
-    
     return {"results": results}
 
 
@@ -394,17 +373,13 @@ async def batch_analyze_images(image_ids: List[str]):
 @router.get("/analysis/duplicates")
 async def find_duplicates(threshold: float = 0.8):
     """Find duplicate images using multiple methods."""
-    # Method 1: Hash-based
     hash_duplicates = db.find_hash_duplicates(threshold)
-    
-    # Method 2: VLM-based
     vlm_duplicates = await vision_client.find_similar_images(threshold)
     
-    # Combine results
     duplicates = hash_duplicates + [
         d for d in vlm_duplicates 
         if d["image1_id"] not in [h["image1_id"] for h in hash_duplicates]
-    ][:100]  # Limit results
+    ][:100]
     
     return {
         "duplicates": duplicates,
@@ -439,7 +414,6 @@ async def create_project(project_data: dict):
     description = project_data.get("description", "")
     project = db.create_project(name, description)
     
-    # Auto-suggest images for the project based on description
     suggestions = await vision_client.suggest_images_for_project(
         project["id"], description
     )
@@ -480,16 +454,13 @@ async def get_project_suggestions(project_id: str):
     if not project:
         raise HTTPException(404, "Project not found")
     
-    # Get analysis metadata from images
     analysis = db.get_project_analysis(project_id)
-    
     suggestions = {
         "description_suggestions": analysis.get("description_suggestions", []),
         "tags_suggestions": analysis.get("tags_suggestions", []),
         "similar_projects": analysis.get("similar_projects", [])
     }
     
-    # Generate project summary if needed
     if not project.get("summary"):
         summary = vision_client.generate_project_summary(analysis)
         db.update_project_metadata(project_id, {"summary": summary})
@@ -510,7 +481,6 @@ async def delete_project(project_id: str):
     if not project:
         raise HTTPException(404, "Project not found")
     
-    # Remove image-project relationships
     cursor = sqlite3.connect(db.db_path).cursor()
     cursor.execute("DELETE FROM image_projects WHERE project_id = ?", (project_id,))
     cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -529,18 +499,15 @@ async def compile_project(project_id: str = Body(...), output_format: str = "jso
     if not project:
         raise HTTPException(404, "Project not found")
     
-    # Get all images and analyses
     project_data = {
         "project": project,
         "images": db.get_project_images(project_id),
         "analysis": db.get_project_analysis(project_id)
     }
     
-    # Compile in requested format
     if output_format == "json":
         return project_data
     elif output_format == "markdown":
-        # Generate markdown report
         md = f"# {project['name']}\n\n"
         md += f"{project.get('description', '')}\n\n"
         md += "## Images\n\n"
@@ -561,3 +528,27 @@ async def init_database():
     """Initialize database if not already done."""
     db.init_database()
     return {"status": "initialized", "database": "images.db"}
+  # ===============Clear Database================
+
+@router.post("/db/clear")
+async def clear_database():
+    """Clear all records from the database tables."""
+    try:
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        
+        # Disable foreign keys temporarily to allow truncating/deleting tables safely
+        cursor.execute("PRAGMA foreign_keys = OFF;")
+        
+        # Clear all application tables
+        cursor.execute("DELETE FROM image_projects;")
+        cursor.execute("DELETE FROM projects;")
+        cursor.execute("DELETE FROM image_analysis;")
+        cursor.execute("DELETE FROM images;")
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "success", "message": "Database cleared successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear database: {str(e)}")  

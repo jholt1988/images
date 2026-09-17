@@ -31,7 +31,7 @@ class VisionClient:
     def __init__(self):
         self.engine = os.getenv("VLM_ENGINE", "ollama")
         self.api_key = os.getenv("OPENAI_API_KEY", "")
-        self.ollama_url = os.getenv("OLLAMA_URL", "https://73d4kjrf9en6q2-11434.proxy.runpod.net/")
+        self.ollama_url = os.getenv("OLLAMA_URL", "https://gezt90h2jxkuuu-11434.proxy.runpod.net/")
         self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
         self.ollama_model = os.getenv("OLLAMA_MODEL", "feadxus/Huihui-Qwen3-VL-4B-Instruct-abliterated:BF16")  # Use llava or qwen2-vl
         self.db = Database()

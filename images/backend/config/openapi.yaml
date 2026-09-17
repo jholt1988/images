@@ -1,0 +1,109 @@
+openapi: 3.0.3
+info:
+  title: Vision App API
+  version: 1.0.0
+  description: OpenAPI specification for the Python backend and React frontend integration[cite: 1, 2, 3].
+servers:
+  - url: http://localhost:5000
+    description: Local development server
+
+paths:
+  /api/settings:
+    get:
+      summary: Retrieve application settings
+      description: Fetches the current application configuration stored in app_settings.json[cite: 1, 3].
+      responses:
+        '200':
+          description: Successful response returning current settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+    put:
+      summary: Update application settings
+      description: Updates application configurations and persists changes to the backend[cite: 1, 3].
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Settings'
+      responses:
+        '200':
+          description: Settings successfully updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  settings:
+                    $ref: '#/components/schemas/Settings'
+
+  /api/upload:
+    post:
+      summary: Upload an image for vision analysis
+      description: Uploads an image file to the backend processing pipeline[cite: 1, 3].
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Image file to upload (e.g., JPEG, PNG)
+      responses:
+        '201':
+          description: Image uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "img_12345"
+                  url:
+                    type: string
+                    example: "/uploads/landscape_test.jpg"
+
+  /api/analysis:
+    get:
+      summary: Get image analysis results
+      description: Retrieves vision analysis data for processed images[cite: 1, 3].
+      responses:
+        '200':
+          description: List of analysis results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    filename:
+                      type: string
+                    labels:
+                      type: array
+                      items:
+                        type: string
+
+components:
+      schemas:
+        Settings:
+          type: object
+          properties:
+            theme:
+              type: string
+              enum: [light, dark]
+              example: light
+            notifications:
+              type: boolean
+              example: true
