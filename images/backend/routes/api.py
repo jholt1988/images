@@ -40,10 +40,11 @@ async def list_vision_models():
     engine = os.getenv("VLM_ENGINE", "ollama")
     if engine == "ollama":
         try:
+            # Use the vision client's configured URL so the two don't drift
+            # into different defaults.
+            ollama_url = vision_client.ollama_url.rstrip("/")
             async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(
-                    f"{os.getenv('OLLAMA_URL', 'https://b9y9yyr9f6j4h0-11434.proxy.runpod.net')}/api/tags"
-                )
+                response = await client.get(f"{ollama_url}/api/tags")
                 if response.status_code == 200:
                     models_data = response.json().get("models", [])
                     vision_models = []
@@ -113,7 +114,7 @@ async def get_settings():
 @router.post("/settings")
 async def save_settings(data: dict):
     """Persist app settings to the config file."""
-    valid_keys = {'VLM_ENGINE', 'OLLAMA_URL', 'OLLAMA_MODEL', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'UPLOAD_MAX_SIZE'}
+    valid_keys = {'VLM_ENGINE', 'OLLAMA_URL', 'OLLAMA_MODEL', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'UPLOAD_MAX_SIZE', 'theme', 'notifications'}
     invalid_keys = set(data.keys()) - valid_keys
     if invalid_keys:
         raise HTTPException(status_code=400, detail=f"Invalid settings keys: {invalid_keys}")
@@ -163,24 +164,29 @@ async def upload_image(file: UploadFile = File(...)):
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(400, "File size must be less than 10MB")
     
-    images_dir = Path("data/images/originals")
+    # Anchor to the project root so the stored path is absolute and identical to
+    # what serve_image/delete resolve against, regardless of the server CWD.
+    images_dir = PROJECT_ROOT / "data" / "images" / "originals"
     images_dir.mkdir(parents=True, exist_ok=True)
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file.filename}"
+    # Strip any directory components from the client-supplied filename to avoid
+    # path traversal out of the originals dir.
+    safe_name = Path(file.filename).name if file.filename else "upload"
+    filename = f"{timestamp}_{safe_name}"
     filepath = images_dir / filename
-    
+
     with open(filepath, "wb") as f:
         f.write(content)
-    
-    image_id = db.add_image(str(filepath), file.filename)
-    await db.index_image(image_id)
+
+    image_id = db.add_image(str(filepath), safe_name)
+    db.index_image(image_id)
     
     analyzed = False
     analysis_error = None
     try:
         analysis = await vision_client.analyze_image(str(filepath))
-        db.save_image_analysis(image_id, analysis.dict())
+        db.save_image_analysis(image_id, analysis.model_dump())
         db.update_image_metadata(image_id, {
             "has_analysis": True,
             "analysis_updated": datetime.now().isoformat()
@@ -314,7 +320,7 @@ async def analyze_image(image_id: str, force: bool = False):
     
     try:
         result = await vision_client.analyze_image(image["path"])
-        db.save_image_analysis(image_id, result.dict())
+        db.save_image_analysis(image_id, result.model_dump())
         db.update_image_metadata(image_id, {
             "has_analysis": True,
             "analysis_updated": datetime.now().isoformat()
@@ -391,6 +397,27 @@ async def find_duplicates(threshold: float = 0.8):
 
 # ==================== Project Management ====================
 
+def _project_summary(project: Dict) -> str:
+    """Best-effort project summary: prefer the `summary` column, then fall back
+    to a summary stored in the JSON metadata (where /projects/{id}/suggestions
+    writes it). Returns a friendly default if neither exists."""
+    col = project.get("summary")
+    if col:
+        return col
+    meta = ""
+    if project.get("metadata"):
+        meta = project["metadata"]
+        try:
+            meta = json.loads(meta)
+        except json.JSONDecodeError:
+            meta = {}
+        except (TypeError, ValueError):
+            meta = {}
+    if isinstance(meta, dict) and meta.get("summary"):
+        return meta["summary"]
+    return "No summary available"
+
+
 @router.get("/projects")
 async def get_projects():
     """Get all projects."""
@@ -400,9 +427,12 @@ async def get_projects():
             "id": p["id"],
             "name": p["name"],
             "description": p["description"],
-            "image_count": len(p.get("images", [])),
+            "image_count": p.get("total_images", 0),
+            "total_images": p.get("total_images", 0),
             "created_at": p["created_at"],
-            "summary": p.get("summary", "No summary available")
+            # Summaries written via /projects/{id}/suggestions land in metadata;
+            # prefer the column if set, else fall back to the stored metadata.
+            "summary": _project_summary(p)
         } for p in projects]
     }
 
@@ -493,8 +523,15 @@ async def delete_project(project_id: str):
 # ==================== Compile ====================
 
 @router.post("/compile")
-async def compile_project(project_id: str = Body(...), output_format: str = "json"):
-    """Compile project into specified format."""
+async def compile_project(project_data: dict = Body(...)):
+    """Compile project into specified format.
+
+    Both `project_id` and `output_format` arrive in the JSON body (the frontend
+    sends them there), so read them from the body rather than mixing a body
+    param with a query param.
+    """
+    project_id = project_data["project_id"]
+    output_format = project_data.get("output_format", "json")
     project = db.get_project(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -512,10 +549,16 @@ async def compile_project(project_id: str = Body(...), output_format: str = "jso
         md += f"{project.get('description', '')}\n\n"
         md += "## Images\n\n"
         for img in project_data["images"]:
-            analysis = db.get_image_analysis(img["id"])
+            analysis = db.get_image_analysis(img["id"]) or {}
             md += f"### {img['filename']}\n\n"
-            md += f"- Type: {analysis.get('primary_type', 'Unknown')}\n"
-            md += f"- Tags: {', '.join(analysis.get('tags', [])[:5])}\n\n"
+            if analysis:
+                tags = analysis.get("tags") or []
+                if not isinstance(tags, list):
+                    tags = [tags]
+                md += f"- Type: {analysis.get('primary_type', 'Unknown')}\n"
+                md += f"- Tags: {', '.join(str(t) for t in tags[:5])}\n\n"
+            else:
+                md += "- Not analyzed yet\n\n"
         return {"content": md, "format": "markdown"}
     else:
         raise HTTPException(400, f"Unsupported format: {output_format}")
@@ -543,7 +586,7 @@ async def clear_database():
         # Clear all application tables
         cursor.execute("DELETE FROM image_projects;")
         cursor.execute("DELETE FROM projects;")
-        cursor.execute("DELETE FROM image_analysis;")
+        cursor.execute("DELETE FROM analysis_results;")
         cursor.execute("DELETE FROM images;")
         
         conn.commit()

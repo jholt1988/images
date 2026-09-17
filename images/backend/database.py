@@ -10,7 +10,13 @@ import uuid
 class Database:
     """SQLite database for image analysis app."""
     
-    def __init__(self, db_path: str = "data/images.db"):
+    def __init__(self, db_path: Optional[str] = None):
+        # Anchor the default DB path to the repo root (backend/../data/images.db)
+        # so the file lands in the same place no matter the working dir uvicorn
+        # was started from.
+        if db_path is None:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            db_path = os.path.join(repo_root, "data", "images.db")
         self.db_path = db_path
         self.init_database()
     
@@ -197,8 +203,13 @@ class Database:
         
         conn.close()
     
-    async def index_image(self, image_id: str):
-        """Index image file and extract metadata."""
+    def index_image(self, image_id: str):
+        """Index image file and extract metadata.
+
+        Plain sync def: it only does blocking I/O (read + hash) with no awaits,
+        so marking it async gained nothing and made callers write a spurious
+        ``await`` on a coroutine that does no async work.
+        """
         image = self.get_image(image_id)
         if not image:
             return

@@ -28,7 +28,7 @@ export default function ImageCard({ image, onAnalyze, onDelete, analysisProgress
         )}
 
         <img
-          src={`/api/images/file/${image.id}`}
+          src={`/api/v1/images/file/${image.id}`}
           alt={image.filename}
           className={`w-full h-48 object-cover transition-opacity duration-300 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
           onLoad={() => setIsLoading(false)}

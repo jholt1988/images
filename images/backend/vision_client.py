@@ -44,12 +44,15 @@ class VisionClient:
         # Check Ollama models if available
         try:
             with httpx.Client() as client:
-                response = client.get(f"{self.ollama_url}/api/tags")
+                response = client.get(f"{self.ollama_url.rstrip('/')}/api/tags")
                 if response.status_code == 200:
-                    available["ollama"] = [
-                        model["name"] for model in response.json().get("models", [])
-                        if model.get("name") in ["llava", "qwen2-vl"]
-                    ]
+                    models = response.json().get("models", [])
+                    names = [m["name"] for m in models if m.get("name")]
+                    # Report the configured model plus common vision models.
+                    known = {"llava", "qwen2-vl"}
+                    available["ollama"] = sorted(
+                        {n for n in names if n.split(":")[0] in known or n == self.ollama_model}
+                    )
         except Exception:
             available["ollama"] = []
         
@@ -233,7 +236,13 @@ Return your analysis as a JSON object."""
                     continue
                 analysis_dict = analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()
                 self.db.save_image_analysis(images[i]["id"], analysis_dict)
-                analyzed_images.append({"id": images[i]["id"], "analysis": analysis})
+                # Store the analysis flat so the comparison loop below (which reads
+                # .get("description")/.get("tags")) can actually see the fields.
+                analyzed_images.append({
+                    "id": images[i]["id"],
+                    "filename": images[i].get("filename"),
+                    **analysis_dict,
+                })
         
         # Compare descriptions for similarity (simple text comparison)
         for i, img1 in enumerate(analyzed_images):

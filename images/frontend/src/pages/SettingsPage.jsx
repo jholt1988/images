@@ -6,7 +6,7 @@ export default function SettingsPage() {
 
   // Fetch settings on mount
   useEffect(() => {
-    fetch('/api/settings')
+    fetch('/api/v1/settings')
       .then((res) => res.json())
       .then((data) => setSettings(data))
       .catch((err) => console.error('Failed to load settings', err));
@@ -18,8 +18,9 @@ export default function SettingsPage() {
     setSettings(updatedSettings); // Optimistic UI update
 
     try {
-      const response = await fetch('/api/settings', {
-        method: 'PUT',
+      // POST the settings object to the backend (backend validates the keys)
+      const response = await fetch('/api/v1/settings', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedSettings),
       });

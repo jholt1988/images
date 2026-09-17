@@ -25,7 +25,6 @@ export default function UploadPage() {
     files.forEach(file => formData.append('files', file));
 
     try {
-      // Mock upload - replace with actual API call
       const response = await fetch('/api/v1/images/upload/batch', {
         method: 'POST',
         body: formData,

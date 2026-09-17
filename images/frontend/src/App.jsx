@@ -18,7 +18,7 @@ export default function App() {
     const fetchImages = async () => {
       try {
         setLoading(true);
-        let response = await fetch('/api/images/all?page=1&limit=50');
+        let response = await fetch('/api/v1/images/all?page=1&limit=50');
 
         if (!response.ok) {
           console.error('Failed to fetch images:', response.statusText);

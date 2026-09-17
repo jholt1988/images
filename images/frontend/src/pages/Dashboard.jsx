@@ -18,7 +18,7 @@ export default function Dashboard({ images = [] }) {
     setIsAnalyzingBatch(true);
 
     try {
-      const response = await fetch('/api/images/analyze/batch', {
+      const response = await fetch('/api/v1/images/analyze/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(selectedIds),
